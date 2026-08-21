@@ -36,7 +36,7 @@ python -m pip install numpy opencv-python mss pyautogui pygetwindow
 请先进入项目目录：
 
 ```powershell
-例：cd "C:\Users\baconing\Desktop\脚本编辑器"
+cd "C:\Users\baconing\Desktop\脚本编辑器"
 ```
 
 启动方式任选其一：
@@ -83,7 +83,11 @@ icons/back_to_main_menu.png -> 模板名填写 back_to_main_menu
 
 ### 5.2 选择执行功能
 
+“执行功能”有三种模式：
+
 - `custom`：执行 `saved_tasks.json` 中保存的自定义任务，仅执行已启用步骤。
+- `daily`：执行内置的每日任务预设。
+- `side`：执行内置的歧路任务预设。
 
 点击“新建预设”可以创建一个空白预设。输入名称后，新预设会出现在下拉框中；切换到它后可通过“新增步骤”编排流程。预设会保存到项目根目录的 `saved_presets.json`，与 `custom` 的 `saved_tasks.json` 分开保存。`custom` 也属于可复制的预设，可以作为复制来源或目标。切换“执行功能”时，直接点击列表中的步骤即可编辑当前预设，不会跳回自定义任务。按住 `Ctrl` 可以选择多个不连续的组或步骤，按住 `Shift` 可以选择连续范围；选择完成后点击“复制到预设”，再指定目标预设，即可把选中的组或步骤追加过去，不会覆盖目标预设。点击“删除”可以一次删除所有选中的步骤或组；删除组时会同时删除组内步骤。点击“删除预设”可以删除当前预设，删除操作需要确认。
 
