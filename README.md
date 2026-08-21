@@ -195,3 +195,6 @@ python -c "import numpy, cv2, mss, pyautogui, pygetwindow; print('依赖正常')
 ## 10. 安全使用建议
 
 首次配置时关闭“循环执行”，只启用一个步骤进行测试。确认识别和点击位置正确后，再逐步启用后续步骤。运行过程中不要把鼠标移动到可能触发其他重要操作的位置，也不要在未验证任务配置的情况下长时间无人看管运行。
+
+abc def ghi jkl mno pqr stu
+abc def ghi jkl mno pqr stu
