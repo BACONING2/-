@@ -24,19 +24,29 @@ def _win32_click(target_x, target_y, duration=CLICK_DELAY):
     user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
 
 
-def drag_position(start_x, start_y, end_x, end_y, duration=0.25):
+def drag_position(start_x, start_y, end_x, end_y, duration=0.25, stop_flag=None):
     """从一个点拖到另一个点，适合列表滚动/拖动界面。"""
+    duration = max(0.0, float(duration))
     user32.SetCursorPos(int(start_x), int(start_y))
     time.sleep(0.02)
     user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
     steps = max(8, int(max(abs(end_x - start_x), abs(end_y - start_y)) / 5))
+    start_time = time.monotonic()
     for i in range(1, steps + 1):
+        if stop_flag is not None and stop_flag.is_set():
+            user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+            return False
         progress = i / steps
         x = int(start_x + (end_x - start_x) * progress)
         y = int(start_y + (end_y - start_y) * progress)
         user32.SetCursorPos(x, y)
-        time.sleep(max(0.005, duration / steps))
+        remaining = start_time + duration * progress - time.monotonic()
+        if remaining > 0:
+            if stop_flag is not None and stop_flag.wait(remaining):
+                user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                return False
     user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    return True
 
 
 def click_position(x, y, offset=(0, 0), duration=CLICK_DELAY):

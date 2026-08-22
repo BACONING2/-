@@ -4,7 +4,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from config import THRESHOLD, USE_COLOR_MATCHING, USE_MULTI_SCALE, SCALE_RANGE, SCALE_STEP
+from config import THRESHOLD, USE_MULTI_SCALE, SCALE_RANGE, SCALE_STEP
 
 
 def load_templates(icon_dir):
@@ -47,7 +47,7 @@ def match_all_templates(screen_img, templates, threshold=THRESHOLD,
     如果同一模板在画面中出现多个位置，则随机选一个位置作为命中结果，
     避免相同元素被卡在首个匹配点上。
     """
-    match_screen = screen_img if USE_COLOR_MATCHING else cv2.cvtColor(screen_img, cv2.COLOR_BGR2GRAY)
+    match_screen = cv2.cvtColor(screen_img, cv2.COLOR_BGR2GRAY)
     results = {}
     center_x = None
     center_y = None
@@ -92,7 +92,7 @@ def match_all_templates(screen_img, templates, threshold=THRESHOLD,
         return (dx * dx + dy * dy) <= radius_sq
 
     for name, tpl in templates.items():
-        match_template = tpl if USE_COLOR_MATCHING else cv2.cvtColor(tpl, cv2.COLOR_BGR2GRAY)
+        match_template = cv2.cvtColor(tpl, cv2.COLOR_BGR2GRAY)
         candidates = []
         best_val = -1.0
 

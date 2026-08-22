@@ -214,6 +214,7 @@ class AutoScriptGUI:
         ttk.Button(action_buttons, text="绑定图片", command=self.select_task_image).pack(side="left", padx=(0, 8))
         ttk.Button(action_buttons, text="记录点击点", command=self.capture_current_click_position).pack(side="left", padx=(0, 8))
         ttk.Button(action_buttons, text="框选识别区域", command=self.capture_current_match_region).pack(side="left", padx=(0, 8))
+        ttk.Button(action_buttons, text="清空识别区域", command=self.clear_current_match_regions).pack(side="left", padx=(0, 8))
         ttk.Button(action_buttons, text="应用修改", command=self.apply_selected_task).pack(side="left")
 
         self.mode_task_title_var = tk.StringVar(value="普通步骤")
@@ -743,7 +744,10 @@ class AutoScriptGUI:
 
         elif task_type == "click_until_gone":
             name_var = tk.StringVar(value=str(task.get("description", "持续点击直到识别步骤")))
-            template_var = tk.StringVar(value=str(task.get("template", "")))
+            saved_templates = task.get("templates") or task.get("template", "")
+            if isinstance(saved_templates, (list, tuple)):
+                saved_templates = ", ".join(str(item) for item in saved_templates)
+            template_var = tk.StringVar(value=str(saved_templates))
             interval_var = tk.StringVar(value=str(task.get("click_interval", 0.5)))
             timeout_var = tk.StringVar(value=str(task.get("timeout", 30)))
             stop_delay_var = tk.StringVar(value=str(task.get("stop_delay", 0.0)))
@@ -771,11 +775,16 @@ class AutoScriptGUI:
                     filetypes=[("PNG Images", "*.png"), ("All Files", "*.*")],
                 )
                 if file_path:
-                    template_var.set(os.path.splitext(os.path.basename(file_path))[0])
+                    image_name = os.path.splitext(os.path.basename(file_path))[0]
+                    current_names = [item.strip() for item in template_var.get().replace("，", ",").split(",") if item.strip()]
+                    if image_name not in current_names:
+                        current_names.append(image_name)
+                    template_var.set(", ".join(current_names))
 
             ttk.Button(action_row, text="绑定图片", command=bind_image).pack(side="left", padx=(0, 8))
             ttk.Button(action_row, text="记录点击点", command=self.capture_current_click_position).pack(side="left", padx=(0, 8))
             ttk.Button(action_row, text="框选识别区域", command=self.capture_current_match_region).pack(side="left")
+            ttk.Button(action_row, text="清空识别区域", command=self.clear_current_match_regions).pack(side="left", padx=(8, 0))
             ttk.Checkbutton(
                 config_frame,
                 text="超时后继续执行下一步骤",
@@ -793,7 +802,9 @@ class AutoScriptGUI:
 
             def save_click_until_gone():
                 task["description"] = name_var.get().strip() or "持续点击直到识别步骤"
-                task["template"] = template_var.get().strip()
+                template_names = [item.strip() for item in template_var.get().replace("，", ",").split(",") if item.strip()]
+                task["templates"] = template_names
+                task["template"] = template_names[0] if template_names else ""
                 task["click_interval"] = max(0.01, float(interval_var.get() or 0.5))
                 task["stop_delay"] = max(0.0, float(stop_delay_var.get() or 0.0))
                 task["timeout"] = max(0.0, float(timeout_var.get() or 30))
@@ -1320,7 +1331,8 @@ class AutoScriptGUI:
         self.click_x_var.set(str(task.get("click_x", task.get("click_position", (None, None))[0] if isinstance(task.get("click_position"), (list, tuple)) and len(task.get("click_position")) >= 2 else "")))
         self.click_y_var.set(str(task.get("click_y", task.get("click_position", (None, None))[1] if isinstance(task.get("click_position"), (list, tuple)) and len(task.get("click_position")) >= 2 else "")))
 
-        rect = task.get("match_rect") or task.get("search_rect")
+        rects = task.get("match_rects")
+        rect = (rects[0] if isinstance(rects, list) and rects else None) or task.get("match_rect") or task.get("search_rect")
         if isinstance(rect, (list, tuple)) and len(rect) >= 4:
             left, top, right, bottom = map(int, rect[:4])
             center_x = int((left + right) / 2)
@@ -1458,11 +1470,13 @@ class AutoScriptGUI:
                 int(float(region_bottom)),
             )
             task["search_rect"] = task["match_rect"]
+            task["match_rects"] = [task["match_rect"]]
             self.region_center_x_var.set(str(int((int(float(region_left)) + int(float(region_right))) / 2)))
             self.region_center_y_var.set(str(int((int(float(region_top)) + int(float(region_bottom))) / 2)))
         else:
             task.pop("match_rect", None)
             task.pop("search_rect", None)
+            task.pop("match_rects", None)
         task["next_template"] = self.next_template_var.get().strip() or None
         task["after_wait"] = max(0.0, float(self.after_wait_var.get() or 0.0))
         wait_mode = self.wait_for_var.get()
@@ -1617,6 +1631,28 @@ class AutoScriptGUI:
     def capture_current_match_region(self):
         self._start_region_capture("match")
 
+    def clear_current_match_regions(self):
+        if self.selected_group_id is not None:
+            return
+        if not (0 <= self.selected_task_index < len(TASKS)):
+            return
+        task = TASKS[self.selected_task_index]
+        for key in ("match_rects", "match_rect", "search_rect"):
+            task.pop(key, None)
+        for variable in (
+            self.region_left_var,
+            self.region_top_var,
+            self.region_right_var,
+            self.region_bottom_var,
+            self.region_center_x_var,
+            self.region_center_y_var,
+        ):
+            variable.set("")
+        self.save_current_tasks()
+        self.refresh_task_list()
+        self.load_task_to_form(self.selected_task_index)
+        self.append_log("已清空当前步骤的全部识别区域")
+
     def capture_next_template_region(self):
         if not self.next_template_var.get().strip():
             self.append_log("请先选择下一模板图片，再框选它的出现位置。")
@@ -1722,8 +1758,12 @@ class AutoScriptGUI:
             task["next_match_rect"] = selected_rect
             task["next_search_rect"] = selected_rect
         else:
-            task["match_rect"] = selected_rect
-            task["search_rect"] = selected_rect
+            match_rects = task.setdefault("match_rects", [])
+            if not isinstance(match_rects, list):
+                match_rects = []
+            match_rects.append(selected_rect)
+            task["match_rect"] = match_rects[0]
+            task["search_rect"] = match_rects[0]
         center_x = int((left + right) / 2)
         center_y = int((top + bottom) / 2)
         if self.region_capture_target == "next":
@@ -1735,6 +1775,7 @@ class AutoScriptGUI:
             self.region_bottom_var.set(str(local_bottom))
             self.region_center_x_var.set(str(int((local_left + local_right) / 2)))
             self.region_center_y_var.set(str(int((local_top + local_bottom) / 2)))
+            self.append_log(f"已追加第 {len(task.get('match_rects', []))} 段识别区域")
         self.save_current_tasks()
         self.region_capture_rect = None
         self._clear_selection_preview()
@@ -2112,8 +2153,13 @@ class AutoScriptGUI:
             center_x = int((left + right) / 2)
             center_y = int((top + bottom) / 2)
 
-            detour_task["match_rect"] = (local_left, local_top, local_right, local_bottom)
-            detour_task["search_rect"] = (local_left, local_top, local_right, local_bottom)
+            selected_rect = (local_left, local_top, local_right, local_bottom)
+            match_rects = detour_task.setdefault("match_rects", [])
+            if not isinstance(match_rects, list):
+                match_rects = []
+            match_rects.append(selected_rect)
+            detour_task["match_rect"] = match_rects[0]
+            detour_task["search_rect"] = match_rects[0]
 
             region_left_var.set(str(local_left))
             region_top_var.set(str(local_top))
@@ -2152,6 +2198,20 @@ class AutoScriptGUI:
         overlay.geometry(f"{screen_w}x{screen_h}+0+0")
         overlay.deiconify()
         overlay.focus_force()
+
+    def _clear_detour_match_region(self, detour_task, region_left_var, region_top_var, region_right_var, region_bottom_var, region_center_x_var, region_center_y_var):
+        for key in ("match_rects", "match_rect", "search_rect"):
+            detour_task.pop(key, None)
+        for variable in (
+            region_left_var,
+            region_top_var,
+            region_right_var,
+            region_bottom_var,
+            region_center_x_var,
+            region_center_y_var,
+        ):
+            variable.set("")
+        self.append_log("已清空迂回步骤的全部识别区域")
 
     def open_detour_step_config_editor(self, detour_task):
         win = tk.Toplevel(self.root)
@@ -2213,6 +2273,7 @@ class AutoScriptGUI:
             ttk.Button(action_row, text="绑定下一模板", command=lambda: self._bind_detour_next_template_image(detour_task, next_template_var)).pack(side="left", padx=(0, 8))
             ttk.Button(action_row, text="记录点击点", command=lambda: self._capture_detour_click_position(detour_task, click_x_var, click_y_var, win)).pack(side="left", padx=(0, 8))
             ttk.Button(action_row, text="框选识别区域", command=lambda: self._capture_detour_match_region(detour_task, region_left_var, region_top_var, region_right_var, region_bottom_var, region_center_x_var, region_center_y_var, click_x_var, click_y_var, win)).pack(side="left")
+            ttk.Button(action_row, text="清空识别区域", command=lambda: self._clear_detour_match_region(detour_task, region_left_var, region_top_var, region_right_var, region_bottom_var, region_center_x_var, region_center_y_var)).pack(side="left", padx=(8, 0))
 
             region_row = ttk.Frame(form)
             region_row.pack(fill="x", pady=(4, 0))
@@ -2262,9 +2323,11 @@ class AutoScriptGUI:
                 if left or top or right or bottom:
                     detour_task["search_rect"] = (left, top, right, bottom)
                     detour_task["match_rect"] = (left, top, right, bottom)
+                    detour_task["match_rects"] = [detour_task["match_rect"]]
                 else:
                     detour_task.pop("search_rect", None)
                     detour_task.pop("match_rect", None)
+                    detour_task.pop("match_rects", None)
 
                 wait_mode = wait_mode_var.get()
                 if wait_mode == "2. 等待目标模板出现":
@@ -2459,13 +2522,17 @@ class AutoScriptGUI:
 
         if task_type == "click_until_gone":
             name_var = tk.StringVar(value=str(detour_task.get("description", "持续点击直到识别步骤")))
-            template_var = tk.StringVar(value=str(detour_task.get("template", "")))
+            saved_templates = detour_task.get("templates") or detour_task.get("template", "")
+            if isinstance(saved_templates, (list, tuple)):
+                saved_templates = ", ".join(str(item) for item in saved_templates)
+            template_var = tk.StringVar(value=str(saved_templates))
             interval_var = tk.StringVar(value=str(detour_task.get("click_interval", 0.5)))
             timeout_var = tk.StringVar(value=str(detour_task.get("timeout", 30)))
             stop_delay_var = tk.StringVar(value=str(detour_task.get("stop_delay", 0.0)))
             continue_timeout_var = tk.BooleanVar(value=bool(detour_task.get("continue_after_timeout", False)))
             stop_on_change_var = tk.BooleanVar(value=bool(detour_task.get("stop_on_change", False)))
-            current_rect = detour_task.get("search_rect") or detour_task.get("match_rect") or ("", "", "", "")
+            saved_rects = detour_task.get("match_rects")
+            current_rect = (saved_rects[0] if isinstance(saved_rects, list) and saved_rects else None) or detour_task.get("search_rect") or detour_task.get("match_rect") or ("", "", "", "")
             region_left_var = tk.StringVar(value=str(current_rect[0]))
             region_top_var = tk.StringVar(value=str(current_rect[1]))
             region_right_var = tk.StringVar(value=str(current_rect[2]))
@@ -2478,6 +2545,19 @@ class AutoScriptGUI:
             ttk.Entry(win, textvariable=name_var).pack(fill="x", padx=12)
             ttk.Label(win, text="绑定图片:").pack(anchor="w", padx=12, pady=(8, 0))
             ttk.Entry(win, textvariable=template_var).pack(fill="x", padx=12)
+            def bind_image():
+                file_path = filedialog.askopenfilename(
+                    title="选择持续点击图片",
+                    initialdir=os.path.join(os.path.dirname(__file__), "icons"),
+                    filetypes=[("PNG Images", "*.png"), ("All Files", "*.*")],
+                )
+                if file_path:
+                    image_name = os.path.splitext(os.path.basename(file_path))[0]
+                    current_names = [item.strip() for item in template_var.get().replace("，", ",").split(",") if item.strip()]
+                    if image_name not in current_names:
+                        current_names.append(image_name)
+                    template_var.set(", ".join(current_names))
+            ttk.Button(win, text="绑定图片", command=bind_image).pack(anchor="w", padx=12, pady=(4, 0))
             ttk.Label(win, text="点击间隔(秒):").pack(anchor="w", padx=12, pady=(8, 0))
             ttk.Entry(win, textvariable=interval_var).pack(fill="x", padx=12)
             ttk.Label(win, text="超时(秒，0为不限制):").pack(anchor="w", padx=12, pady=(8, 0))
@@ -2498,6 +2578,19 @@ class AutoScriptGUI:
                     win,
                 ),
             ).pack(anchor="w", padx=12, pady=(8, 0))
+            ttk.Button(
+                win,
+                text="清空识别区域",
+                command=lambda: self._clear_detour_match_region(
+                    detour_task,
+                    region_left_var,
+                    region_top_var,
+                    region_right_var,
+                    region_bottom_var,
+                    region_center_x_var,
+                    region_center_y_var,
+                ),
+            ).pack(anchor="w", padx=12, pady=(4, 0))
             ttk.Button(
                 win,
                 text="记录点击点",
@@ -2521,7 +2614,9 @@ class AutoScriptGUI:
             def save():
                 detour_task["type"] = "click_until_gone"
                 detour_task["description"] = name_var.get().strip() or "持续点击直到识别步骤"
-                detour_task["template"] = template_var.get().strip()
+                template_names = [item.strip() for item in template_var.get().replace("，", ",").split(",") if item.strip()]
+                detour_task["templates"] = template_names
+                detour_task["template"] = template_names[0] if template_names else ""
                 detour_task["click_interval"] = max(0.01, float(interval_var.get() or 0.5))
                 detour_task["stop_delay"] = max(0.0, float(stop_delay_var.get() or 0.0))
                 detour_task["timeout"] = max(0.0, float(timeout_var.get() or 30))
@@ -2543,12 +2638,12 @@ class AutoScriptGUI:
         if not (0 <= self.selected_task_index < len(TASKS)):
             return
         task = TASKS[self.selected_task_index]
-        if task.get("type", "normal") != "normal":
+        if task.get("type", "normal") not in ("normal", "advanced"):
             return
 
         win = tk.Toplevel(self.root)
         win.title("迂回设置")
-        win.geometry("520x420")
+        win.geometry("620x470")
         win.transient(self.root)
         win.grab_set()
 
@@ -2562,14 +2657,16 @@ class AutoScriptGUI:
             jump_options.append(option)
             jump_option_numbers[option] = task_index + 1
 
-        saved_jump_to = task.get("detour_jump_to")
-        selected_jump = "不跳转"
-        if saved_jump_to is not None:
-            for option, step_number in jump_option_numbers.items():
-                if step_number == int(saved_jump_to):
-                    selected_jump = option
-                    break
-        jump_var = tk.StringVar(value=selected_jump)
+        def jump_label(target_number):
+            if target_number is None:
+                return "不跳转"
+            for option, option_number in jump_option_numbers.items():
+                if option_number == int(target_number):
+                    return option
+            return "不跳转"
+
+        jump_var = tk.StringVar(value=jump_label(task.get("detour_jump_to")))
+        success_jump_var = tk.StringVar(value=jump_label(task.get("detour_success_jump_to")))
         step_type_var = tk.StringVar(value="normal")
         step_list = tk.Listbox(win, height=12, exportselection=False)
         step_list.pack(fill="both", expand=True, padx=12, pady=(12, 8))
@@ -2585,12 +2682,17 @@ class AutoScriptGUI:
         row = ttk.Frame(win)
         row.pack(fill="x", padx=12, pady=(0, 8))
         ttk.Checkbutton(row, text="启用迂回", variable=enabled_var).pack(side="left")
-        ttk.Label(row, text="跳到编号:").pack(side="left", padx=(18, 6))
+        ttk.Label(row, text="未识别时跳到:").pack(side="left", padx=(18, 6))
         ttk.Combobox(row, textvariable=jump_var, values=jump_options, state="readonly", width=28).pack(side="left")
+
+        success_row = ttk.Frame(win)
+        success_row.pack(fill="x", padx=12, pady=(0, 8))
+        ttk.Label(success_row, text="识别成功后跳到:").pack(side="left", padx=(0, 6))
+        ttk.Combobox(success_row, textvariable=success_jump_var, values=jump_options, state="readonly", width=28).pack(side="left")
 
         add_row = ttk.Frame(win)
         add_row.pack(fill="x", padx=12, pady=(0, 6))
-        ttk.Combobox(add_row, textvariable=step_type_var, values=["normal", "key_press", "keyboard_move", "drag", "click_until_gone"], state="readonly", width=20).pack(side="left")
+        ttk.Combobox(add_row, textvariable=step_type_var, values=["normal", "advanced", "key_press", "keyboard_move", "drag", "click_until_gone"], state="readonly", width=20).pack(side="left")
         ttk.Button(add_row, text="新增步骤", command=lambda: (detour_steps.append({"type": step_type_var.get() or "normal"}), refresh_list())).pack(side="left", padx=(8, 0))
 
         action_row = ttk.Frame(win)
@@ -2602,6 +2704,7 @@ class AutoScriptGUI:
             task["detour_enabled"] = bool(enabled_var.get())
             task["detour_steps"] = detour_steps
             task["detour_jump_to"] = jump_option_numbers.get(jump_var.get())
+            task["detour_success_jump_to"] = jump_option_numbers.get(success_jump_var.get())
             self.save_current_tasks()
             self.refresh_task_list()
             self.load_task_to_form(self.selected_task_index)
@@ -3768,10 +3871,7 @@ class AutoScriptGUI:
             return
 
         mode = self.mode_var.get() or "custom"
-        if mode == "custom":
-            selected_tasks = self.get_selected_tasks()
-        else:
-            selected_tasks = get_tasks_for_mode(mode)
+        selected_tasks = self.get_selected_tasks()
 
         window_title = self.window_var.get().strip()
         config.TARGET_WINDOW_TITLE = window_title or None
@@ -3808,7 +3908,7 @@ class AutoScriptGUI:
                 stop_flag=self.stop_event,
                 log_callback=self.append_log,
             )
-            self.status_var.set("已完成")
+            self.status_var.set("已停止" if self.stop_event.is_set() else "已完成")
             self.append_log("脚本执行结束。")
         except Exception as exc:
             self.status_var.set("异常")

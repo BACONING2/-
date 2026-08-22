@@ -89,6 +89,42 @@ class WaitForStepResultTests(unittest.TestCase):
         self.assertIsNone(match["missing"][0])
         self.assertEqual(match_mock.call_args.kwargs["search_rect"], (0, 0, 60, 40))
 
+    def test_match_task_templates_supports_multiple_regions(self):
+        screen = np.zeros((80, 120, 3), dtype=np.uint8)
+        template = np.zeros((10, 10, 3), dtype=np.uint8)
+        template[2:8, 2:8] = 255
+        screen[10:20, 10:20] = template
+        screen[50:60, 90:100] = template
+        main.templates = {"multi": template}
+
+        match = main.match_task_templates(
+            {"match_rects": [(0, 0, 30, 30), (80, 40, 110, 70)]},
+            screen,
+            ["multi"],
+        )
+
+        self.assertIn(match["multi"][0], {(15, 15), (95, 55)})
+
+    @patch("main.capture_screen")
+    def test_click_until_gone_accepts_multiple_templates(self, capture_mock):
+        screen = np.zeros((20, 20, 3), dtype=np.uint8)
+        main.templates = {
+            "first": np.ones((2, 2, 3), dtype=np.uint8),
+            "second": np.ones((2, 2, 3), dtype=np.uint8),
+        }
+        capture_mock.return_value = screen
+
+        with patch("main.match_task_templates", return_value={"first": (None, -1.0), "second": ((5, 5), 0.95)}):
+            result = main.execute_click_until_gone_task(
+                {
+                    "templates": ["first", "second"],
+                    "click_position": (10, 10),
+                    "timeout": 1,
+                }
+            )
+
+        self.assertTrue(result)
+
     @patch("main.click_global_position")
     @patch("main.match_task_templates", return_value={})
     @patch("main.capture_screen")
@@ -251,6 +287,61 @@ class WaitForStepResultTests(unittest.TestCase):
         )
 
         self.assertEqual(result, {"outer_jump_to": 8})
+        detour_mock.assert_called_once()
+
+    @patch("main.execute_detour_task", return_value=True)
+    @patch("main.match_task_templates", return_value={"advanced_step": (None, -1.0)})
+    @patch("main.capture_screen")
+    def test_advanced_step_can_use_detour(self, capture_mock, match_mock, detour_mock):
+        capture_mock.return_value = np.zeros((20, 20, 3), dtype=np.uint8)
+
+        result = main.execute_task(
+            {
+                "type": "advanced",
+                "templates": ["advanced_step"],
+                "timeout": 1,
+                "click": False,
+                "detour_enabled": True,
+                "detour_steps": [{"template": "detour_step"}],
+            }
+        )
+
+        self.assertTrue(result)
+        detour_mock.assert_called_once()
+
+    @patch("main.wait_for_step_result")
+    @patch("main.match_task_templates", return_value={"matched": ((10, 10), 0.95)})
+    @patch("main.capture_screen")
+    def test_matched_step_can_jump_to_success_target(self, capture_mock, match_mock, wait_mock):
+        capture_mock.return_value = np.zeros((20, 20, 3), dtype=np.uint8)
+
+        result = main.execute_task(
+            {
+                "template": "matched",
+                "timeout": 1,
+                "click": False,
+                "detour_success_jump_to": 5,
+            }
+        )
+
+        self.assertEqual(result, {"outer_jump_to": 5})
+
+    @patch("main.execute_detour_task", return_value=True)
+    @patch("main.match_task_templates", return_value={"missing": (None, -1.0)})
+    @patch("main.capture_screen")
+    def test_missing_step_uses_legacy_detour_jump_target(self, capture_mock, match_mock, detour_mock):
+        capture_mock.return_value = np.zeros((20, 20, 3), dtype=np.uint8)
+
+        result = main.execute_task(
+            {
+                "template": "missing",
+                "timeout": 1,
+                "click": False,
+                "detour_jump_to": 7,
+            }
+        )
+
+        self.assertEqual(result, {"outer_jump_to": 7})
         detour_mock.assert_called_once()
 
 

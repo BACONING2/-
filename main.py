@@ -15,6 +15,15 @@ from tasks import TASKS
 templates = load_templates(ICON_DIR)
 
 
+def interruptible_sleep(duration, stop_flag=None):
+    """等待指定时长，并在收到停止信号时立即返回是否已停止。"""
+    duration = max(0.0, float(duration))
+    if stop_flag is None:
+        time.sleep(duration)
+        return False
+    return stop_flag.wait(duration)
+
+
 def reload_templates():
     """重新加载图标目录中的模板，使新绑定的截图立即可用于识别。"""
     global templates
@@ -74,7 +83,7 @@ def find_leftmost_match(results, template_names):
     return best_name, best_center, best_conf
 
 
-def wait_until_template_disappears(template_name, timeout=DEFAULT_TIMEOUT, poll_interval=DEFAULT_POLL_INTERVAL):
+def wait_until_template_disappears(template_name, timeout=DEFAULT_TIMEOUT, poll_interval=DEFAULT_POLL_INTERVAL, stop_flag=None):
     """等待模板消失。"""
     start = time.time()
     while True:
@@ -85,10 +94,11 @@ def wait_until_template_disappears(template_name, timeout=DEFAULT_TIMEOUT, poll_
             return True
         if timeout > 0 and (time.time() - start) > timeout:
             return False
-        time.sleep(poll_interval)
+        if interruptible_sleep(poll_interval, stop_flag):
+            return False
 
 
-def wait_until_template_appears(template_name, timeout=DEFAULT_TIMEOUT, poll_interval=DEFAULT_POLL_INTERVAL, search_rect=None):
+def wait_until_template_appears(template_name, timeout=DEFAULT_TIMEOUT, poll_interval=DEFAULT_POLL_INTERVAL, search_rect=None, stop_flag=None):
     """等待模板出现。"""
     start = time.time()
     while True:
@@ -99,10 +109,11 @@ def wait_until_template_appears(template_name, timeout=DEFAULT_TIMEOUT, poll_int
             return center, conf
         if timeout > 0 and (time.time() - start) > timeout:
             return None, None
-        time.sleep(poll_interval)
+        if interruptible_sleep(poll_interval, stop_flag):
+            return None, None
 
 
-def wait_until_any_template_appears(template_names, timeout=DEFAULT_TIMEOUT, poll_interval=DEFAULT_POLL_INTERVAL, search_rect=None):
+def wait_until_any_template_appears(template_names, timeout=DEFAULT_TIMEOUT, poll_interval=DEFAULT_POLL_INTERVAL, search_rect=None, stop_flag=None):
     """等待任一模板出现，并返回匹配到的模板名。"""
     template_names = normalize_template_names(template_names)
     if not template_names:
@@ -117,10 +128,11 @@ def wait_until_any_template_appears(template_names, timeout=DEFAULT_TIMEOUT, pol
             return name, center, conf
         if timeout > 0 and (time.time() - start) > timeout:
             return None, None, -1.0
-        time.sleep(poll_interval)
+        if interruptible_sleep(poll_interval, stop_flag):
+            return None, None, -1.0
 
 
-def wait_for_step_result(task, template_name=None, next_template_names=None, timeout=None, poll_interval=DEFAULT_POLL_INTERVAL, log_callback=None):
+def wait_for_step_result(task, template_name=None, next_template_names=None, timeout=None, poll_interval=DEFAULT_POLL_INTERVAL, log_callback=None, stop_flag=None):
     """等待点击后的结果：只有在用户配置的 wait_for 条件达成后才继续下一步。固定时间不再作为继续条件。"""
     wait_mode = task.get("wait_for", "time")
     if wait_mode in (None, "", "time"):
@@ -168,7 +180,8 @@ def wait_for_step_result(task, template_name=None, next_template_names=None, tim
             log(f"  步骤结果等待超过 {effective_timeout:g} 秒，继续下一步。", log_callback)
             return False
 
-        time.sleep(poll_interval)
+        if interruptible_sleep(poll_interval, stop_flag):
+            return False
 
 
 def show_complete_message():
@@ -223,12 +236,13 @@ def execute_stage_farm_task(task, stop_flag=None, log_callback=None):
                 click_global_position(screen_x, screen_y, offset)
                 click_source = "记录点击点" if recorded_click is not None else "识别中心"
                 log(f"  已点击{click_source}: ({screen_x + offset[0]}, {screen_y + offset[1]})", log_callback)
-            wait_for_step_result(task, template_name=match_name, next_template_names=next_templates, log_callback=log_callback)
+            wait_for_step_result(task, template_name=match_name, next_template_names=next_templates, log_callback=log_callback, stop_flag=stop_flag)
             if task.get("wait_for") == "next_appear" and next_templates:
                 next_name, next_center, next_conf = wait_until_any_template_appears(
                     next_templates,
                     timeout=get_task_timeout(task, 12),
                     search_rect=task.get("next_match_rect") or task.get("next_search_rect"),
+                    stop_flag=stop_flag,
                 )
                 if next_center is not None:
                     log(f"  检测到下一步 UI '{next_name}'，置信度 {next_conf:.2f}，坐标 {next_center}", log_callback)
@@ -247,11 +261,14 @@ def execute_stage_farm_task(task, stop_flag=None, log_callback=None):
         end_x = start_x + drag_distance * direction
         end_y = start_y
         log(f"  未发现未完成关卡，开始拖动列表方向={direction}，距={drag_distance}，轮次 {round_count + 1}/{max_rounds}", log_callback)
-        drag_position(start_x, start_y, end_x, end_y, duration=0.25)
-        time.sleep(drag_wait)
+        if not drag_position(start_x, start_y, end_x, end_y, duration=0.25, stop_flag=stop_flag):
+            return False
+        if interruptible_sleep(drag_wait, stop_flag):
+            return False
         round_count += 1
         direction *= -1
-        time.sleep(0.1)
+        if interruptible_sleep(0.1, stop_flag):
+            return False
 
 
 def resolve_click_position(task, center=None):
@@ -291,6 +308,21 @@ def resolve_search_rect(task):
         elif isinstance(rect, (list, tuple)) and len(rect) >= 4:
             return (int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
     return None
+
+
+def resolve_search_rects(task):
+    """返回任务配置的多个匹配矩形，并兼容旧的单矩形配置。"""
+    rects = task.get("match_rects")
+    if isinstance(rects, list):
+        resolved = []
+        for rect in rects:
+            parsed = resolve_search_rect({"match_rect": rect})
+            if parsed is not None:
+                resolved.append(parsed)
+        if resolved:
+            return resolved
+    rect = resolve_search_rect(task)
+    return [rect] if rect is not None else []
 
 
 def match_in_expanding_rect(screen_img, match_templates, search_rect):
@@ -356,9 +388,26 @@ def match_task_templates(task, screen_img, template_names=None):
     if not match_templates:
         return {}
 
-    search_rect = resolve_search_rect(task)
-    if search_rect is not None:
-        return match_in_expanding_rect(screen_img, match_templates, search_rect)
+    search_rects = resolve_search_rects(task)
+    if len(search_rects) > 1:
+        merged_results = {}
+        for search_rect in search_rects:
+            results = match_all_templates(
+                screen_img,
+                match_templates,
+                THRESHOLD,
+                USE_MULTI_SCALE,
+                SCALE_RANGE,
+                SCALE_STEP,
+                search_rect=search_rect,
+            )
+            for name, result in results.items():
+                current = merged_results.get(name)
+                if current is None or result[1] > current[1]:
+                    merged_results[name] = result
+        return merged_results
+    if search_rects:
+        return match_in_expanding_rect(screen_img, match_templates, search_rects[0])
 
     center, radius = task_match_region(task)
     return match_all_templates(
@@ -373,10 +422,12 @@ def match_task_templates(task, screen_img, template_names=None):
     )
 
 
-def click_template_name(template_name, offset=(0, 0), timeout=DEFAULT_TIMEOUT, fallback_position=None, log_callback=None, poll_interval=DEFAULT_POLL_INTERVAL):
+def click_template_name(template_name, offset=(0, 0), timeout=DEFAULT_TIMEOUT, fallback_position=None, log_callback=None, poll_interval=DEFAULT_POLL_INTERVAL, stop_flag=None):
     """持续扫描目标模板；记录点击点只用于点击，四元组参数才用于限制识别区域。"""
     start_time = time.time()
     while True:
+        if stop_flag is not None and stop_flag.is_set():
+            return False
         if timeout > 0 and (time.time() - start_time) > timeout:
             break
 
@@ -400,7 +451,8 @@ def click_template_name(template_name, offset=(0, 0), timeout=DEFAULT_TIMEOUT, f
             log(f"  已点击{click_source} '{template_name}'，置信度 {conf:.2f}，坐标: ({screen_x + offset[0]}, {screen_y + offset[1]})", log_callback)
             return True
 
-        time.sleep(poll_interval)
+        if interruptible_sleep(poll_interval, stop_flag):
+            return False
 
     return False
 
@@ -418,7 +470,8 @@ def execute_keyboard_move_task(task, stop_flag=None, log_callback=None):
 
     if delay_before > 0:
         log(f"  执行前延时 {delay_before} 秒。", log_callback)
-        time.sleep(delay_before)
+        if interruptible_sleep(delay_before, stop_flag):
+            return False
 
     for step in move_steps:
         if stop_flag is not None and stop_flag.is_set():
@@ -428,13 +481,16 @@ def execute_keyboard_move_task(task, stop_flag=None, log_callback=None):
         duration = float(step.get("duration", 1.0))
         log(f"  按键: {key} 持续 {duration} 秒", log_callback)
         pyautogui.keyDown(key)
-        time.sleep(duration)
+        if interruptible_sleep(duration, stop_flag):
+            pyautogui.keyUp(key)
+            return False
         pyautogui.keyUp(key)
 
-    wait_for_step_result(task, template_name=task.get("template"), next_template_names=task.get("next_template"), log_callback=log_callback)
+    wait_for_step_result(task, template_name=task.get("template"), next_template_names=task.get("next_template"), log_callback=log_callback, stop_flag=stop_flag)
     if after_wait > 0:
         log(f"  移动完成后等待 {after_wait} 秒。", log_callback)
-        time.sleep(after_wait)
+        if interruptible_sleep(after_wait, stop_flag):
+            return False
     return True
 
 
@@ -451,19 +507,23 @@ def execute_key_press_task(task, stop_flag=None, log_callback=None):
 
     if delay_before > 0:
         log(f"  延时 {delay_before} 秒后按键。", log_callback)
-        time.sleep(delay_before)
+        if interruptible_sleep(delay_before, stop_flag):
+            return False
         if stop_flag is not None and stop_flag.is_set():
             log("用户中止脚本执行。", log_callback)
             return False
 
     pyautogui.keyDown(key)
-    time.sleep(max(0.05, hold_time))
+    if interruptible_sleep(max(0.05, hold_time), stop_flag):
+        pyautogui.keyUp(key)
+        return False
     pyautogui.keyUp(key)
     after_wait = max(0.0, float(task.get("after_wait", 0.2)))
     if after_wait > 0:
         log(f"  按键完成后等待 {after_wait} 秒。", log_callback)
-        time.sleep(after_wait)
-    wait_for_step_result(task, template_name=task.get("template"), log_callback=log_callback)
+        if interruptible_sleep(after_wait, stop_flag):
+            return False
+    wait_for_step_result(task, template_name=task.get("template"), log_callback=log_callback, stop_flag=stop_flag)
     return True
 
 
@@ -480,8 +540,9 @@ def execute_drag_task(task, stop_flag=None, log_callback=None):
         log("用户中止脚本执行。", log_callback)
         return False
 
-    drag_position(start_x, start_y, end_x, end_y, duration=duration)
-    wait_for_step_result(task, template_name=task.get("template"), next_template_names=task.get("next_template"), log_callback=log_callback)
+    if not drag_position(start_x, start_y, end_x, end_y, duration=duration, stop_flag=stop_flag):
+        return False
+    wait_for_step_result(task, template_name=task.get("template"), next_template_names=task.get("next_template"), log_callback=log_callback, stop_flag=stop_flag)
     return True
 
 
@@ -495,25 +556,25 @@ def execute_reward_claim_task(task, stop_flag=None, log_callback=None):
     fallback_position = resolve_search_rect(task) or resolve_click_position(task)
 
     if entry_template:
-        if not click_template_name(entry_template, offset=task.get("offset", (0, 0)), timeout=get_task_timeout(task, 5), fallback_position=fallback_position, log_callback=log_callback):
+        if not click_template_name(entry_template, offset=task.get("offset", (0, 0)), timeout=get_task_timeout(task, 5), fallback_position=fallback_position, log_callback=log_callback, stop_flag=stop_flag):
             if task.get("required", True):
                 raise RuntimeError(f"奖励入口模板 '{entry_template}' 未出现，脚本停止。")
             return False
-        wait_for_step_result(task, template_name=entry_template, log_callback=log_callback)
+        wait_for_step_result(task, template_name=entry_template, log_callback=log_callback, stop_flag=stop_flag)
 
     if confirm_template:
-        if not click_template_name(confirm_template, offset=(0, 0), timeout=get_task_timeout(task, 5), fallback_position=resolve_search_rect(task) or resolve_click_position({**task, "click_position": task.get("confirm_click_position") or task.get("click_position")}), log_callback=log_callback):
+        if not click_template_name(confirm_template, offset=(0, 0), timeout=get_task_timeout(task, 5), fallback_position=resolve_search_rect(task) or resolve_click_position({**task, "click_position": task.get("confirm_click_position") or task.get("click_position")}), log_callback=log_callback, stop_flag=stop_flag):
             if task.get("required", True):
                 raise RuntimeError(f"确认奖励模板 '{confirm_template}' 未出现，脚本停止。")
             return False
-        wait_for_step_result(task, template_name=confirm_template, log_callback=log_callback)
+        wait_for_step_result(task, template_name=confirm_template, log_callback=log_callback, stop_flag=stop_flag)
 
     if back_template:
-        if not click_template_name(back_template, offset=(0, 0), timeout=get_task_timeout(task, 5), fallback_position=resolve_search_rect(task) or resolve_click_position({**task, "click_position": task.get("back_click_position") or task.get("click_position")}), log_callback=log_callback):
+        if not click_template_name(back_template, offset=(0, 0), timeout=get_task_timeout(task, 5), fallback_position=resolve_search_rect(task) or resolve_click_position({**task, "click_position": task.get("back_click_position") or task.get("click_position")}), log_callback=log_callback, stop_flag=stop_flag):
             if task.get("required", True):
                 raise RuntimeError(f"返回主菜单模板 '{back_template}' 未出现，脚本停止。")
             return False
-        wait_for_step_result(task, template_name=back_template, log_callback=log_callback)
+        wait_for_step_result(task, template_name=back_template, log_callback=log_callback, stop_flag=stop_flag)
 
     return True
 
@@ -523,17 +584,17 @@ def execute_event_entry_task(task, stop_flag=None, log_callback=None):
     tpl_name = task.get("template")
     if not tpl_name:
         return True
-    clicked = click_template_name(tpl_name, offset=task.get("offset", (0, 0)), timeout=get_task_timeout(task, 8), fallback_position=resolve_search_rect(task) or resolve_click_position(task), log_callback=log_callback)
+    clicked = click_template_name(tpl_name, offset=task.get("offset", (0, 0)), timeout=get_task_timeout(task, 8), fallback_position=resolve_search_rect(task) or resolve_click_position(task), log_callback=log_callback, stop_flag=stop_flag)
     if clicked:
-        wait_for_step_result(task, template_name=tpl_name, next_template_names=task.get("next_template"), log_callback=log_callback)
+        wait_for_step_result(task, template_name=tpl_name, next_template_names=task.get("next_template"), log_callback=log_callback, stop_flag=stop_flag)
     return clicked
 
 
 def execute_click_until_gone_task(task, stop_flag=None, log_callback=None):
     """目标图片未出现时反复点击，识别到目标图片后停止。"""
-    template_name = str(task.get("template") or "").strip()
+    template_names = normalize_template_names(task.get("templates") or task.get("template"))
     stop_on_change = bool(task.get("stop_on_change", False))
-    if not template_name and not stop_on_change:
+    if not template_names and not stop_on_change:
         raise ValueError("持续点击步骤必须配置绑定图片。")
 
     click_interval = max(0.01, float(task.get("click_interval", 0.5)))
@@ -541,7 +602,9 @@ def execute_click_until_gone_task(task, stop_flag=None, log_callback=None):
     timeout = float(task.get("timeout", DEFAULT_TIMEOUT))
     baseline_screen = capture_screen() if stop_on_change else None
     start_time = time.time()
-    log(f"\n>>> 持续点击任务: {task.get('description', template_name)}", log_callback)
+    next_click_time = None
+    template_label = ", ".join(template_names)
+    log(f"\n>>> 持续点击任务: {task.get('description', template_label)}", log_callback)
 
     def continue_clicking_after_success():
         if stop_delay <= 0:
@@ -551,13 +614,17 @@ def execute_click_until_gone_task(task, stop_flag=None, log_callback=None):
             raise ValueError("持续点击步骤必须先记录点击点。")
         log(f"  已识别到目标，继续点击 {stop_delay} 秒后停止。", log_callback)
         stop_at = time.time() + stop_delay
+        scheduled_click_time = time.time()
         while time.time() < stop_at:
             if stop_flag is not None and stop_flag.is_set():
+                return False
+            wait_time = scheduled_click_time - time.time()
+            if wait_time > 0 and interruptible_sleep(wait_time, stop_flag):
                 return False
             screen_x, screen_y = click_position
             click_global_position(screen_x, screen_y, task.get("offset", (0, 0)))
             log(f"  识别后继续点击记录位置: ({screen_x}, {screen_y})", log_callback)
-            time.sleep(min(click_interval, max(0.0, stop_at - time.time())))
+            scheduled_click_time += click_interval
         return True
 
     while True:
@@ -566,9 +633,9 @@ def execute_click_until_gone_task(task, stop_flag=None, log_callback=None):
             return False
         if timeout > 0 and time.time() - start_time > timeout:
             if task.get("continue_after_timeout", False):
-                log(f"  持续点击图片 '{template_name}' 超时，按设置继续下一步骤。", log_callback)
+                log(f"  持续点击图片 '{template_label}' 超时，按设置继续下一步骤。", log_callback)
                 return True
-            raise RuntimeError(f"持续点击直到识别图片 '{template_name}' 超时，脚本停止。")
+            raise RuntimeError(f"持续点击直到识别图片 '{template_label}' 超时，脚本停止。")
 
         screen_img = capture_screen()
         if stop_on_change:
@@ -578,20 +645,25 @@ def execute_click_until_gone_task(task, stop_flag=None, log_callback=None):
                 return continue_clicking_after_success()
             center = None
         else:
-            results = match_task_templates(task, screen_img, [template_name])
-            center, confidence = results.get(template_name, (None, -1.0))
+            results = match_task_templates(task, screen_img, template_names)
+            matched_name, center, confidence = find_first_match(results, template_names)
         if center is not None:
             if not continue_clicking_after_success():
                 return False
-            log(f"  已识别到 '{template_name}'，持续点击完成。", log_callback)
+            log(f"  已识别到 '{matched_name}'，持续点击完成。", log_callback)
             return True
 
         click_position = resolve_click_position(task)
         if click_position is None:
             raise ValueError("持续点击步骤必须先记录点击点。")
+        wait_time = (next_click_time - time.time()) if next_click_time is not None else 0.0
+        if wait_time > 0 and interruptible_sleep(wait_time, stop_flag):
+            return False
         screen_x, screen_y = click_position
+        click_started_at = time.time()
         click_global_position(screen_x, screen_y, task.get("offset", (0, 0)))
-        log(f"  未识别到 '{template_name}'，点击记录位置: ({screen_x}, {screen_y})", log_callback)
+        next_click_time = click_started_at + click_interval
+        log(f"  未识别到 '{template_label}'，点击记录位置: ({screen_x}, {screen_y})", log_callback)
 
         if stop_on_change:
             after_click_screen = capture_screen()
@@ -599,9 +671,6 @@ def execute_click_until_gone_task(task, stop_flag=None, log_callback=None):
             if difference > 2.0:
                 log("  检测到点击后的画面变化，持续点击完成。", log_callback)
                 return continue_clicking_after_success()
-
-        time.sleep(click_interval)
-
 
 def execute_detour_task(task, stop_flag=None, log_callback=None):
     """执行当前外流程任务的迂回子流程，不允许子步骤再次进入迂回。"""
@@ -651,10 +720,11 @@ def execute_task(task, stop_flag=None, log_callback=None, allow_detour=True):
         offset = task.get("offset", (0, 0))
         click_global_position(click_x, click_y, offset)
         log(f"  直接点击记录坐标: ({click_x + offset[0]}, {click_y + offset[1]})", log_callback)
-        wait_for_step_result(task, template_name=tpl_name, next_template_names=task.get("next_template"), log_callback=log_callback)
+        wait_for_step_result(task, template_name=tpl_name, next_template_names=task.get("next_template"), log_callback=log_callback, stop_flag=stop_flag)
         after_wait = max(0.0, float(task.get("after_wait", 0.0)))
         if after_wait > 0:
-            time.sleep(after_wait)
+            if interruptible_sleep(after_wait, stop_flag):
+                return False
         return True
 
     while True:
@@ -686,7 +756,7 @@ def execute_task(task, stop_flag=None, log_callback=None, allow_detour=True):
 
             wait_mode = task.get("wait_for", "time")
             if wait_mode == "disappear":
-                wait_result = wait_until_template_disappears(tpl_name, timeout=get_task_timeout(task, 12))
+                wait_result = wait_until_template_disappears(tpl_name, timeout=get_task_timeout(task, 12), stop_flag=stop_flag)
                 if wait_result:
                     log(f"  '{tpl_name}' 已消失，继续下一步。", log_callback)
                 else:
@@ -699,6 +769,7 @@ def execute_task(task, stop_flag=None, log_callback=None, allow_detour=True):
                     next_tpl,
                     timeout=get_task_timeout(task, 12),
                     search_rect=task.get("next_match_rect") or task.get("next_search_rect"),
+                    stop_flag=stop_flag,
                 )
                 if next_center is None:
                     log(f"  等待 '{next_tpl}' 出现超时。", log_callback)
@@ -708,15 +779,21 @@ def execute_task(task, stop_flag=None, log_callback=None, allow_detour=True):
                 next_tpl = task.get("next_template")
                 if not next_tpl:
                     raise ValueError(f"任务 '{tpl_name}' 配置了 wait_for='change_then_appear'，但未提供 next_template。")
-                wait_for_step_result(task, template_name=tpl_name, next_template_names=next_tpl, log_callback=log_callback)
+                wait_for_step_result(task, template_name=tpl_name, next_template_names=next_tpl, log_callback=log_callback, stop_flag=stop_flag)
                 log(f"  画面变化后检测到目标结果 '{next_tpl}'，继续下一步。", log_callback)
             else:
-                wait_for_step_result(task, template_name=tpl_name, next_template_names=task.get("next_template"), log_callback=log_callback)
+                wait_for_step_result(task, template_name=tpl_name, next_template_names=task.get("next_template"), log_callback=log_callback, stop_flag=stop_flag)
 
             after_wait = max(0.0, float(task.get("after_wait", 0.0)))
             if after_wait > 0:
                 log(f"  步骤完成后等待 {after_wait} 秒。", log_callback)
-                time.sleep(after_wait)
+                if interruptible_sleep(after_wait, stop_flag):
+                    return False
+
+            success_jump_to = task.get("detour_success_jump_to")
+            if success_jump_to is not None:
+                log(f"  识别成功，跳转到编号步骤 {int(success_jump_to)}。", log_callback)
+                return {"outer_jump_to": int(success_jump_to)}
 
             return True
 
@@ -726,13 +803,14 @@ def execute_task(task, stop_flag=None, log_callback=None, allow_detour=True):
             offset = task.get("offset", (0, 0))
             click_global_position(click_x, click_y, offset)
             log(f"  未开启识别点击，直接点击记录坐标: ({click_x + offset[0]}, {click_y + offset[1]})", log_callback)
-            wait_for_step_result(task, template_name=tpl_name, next_template_names=task.get("next_template"), log_callback=log_callback)
+            wait_for_step_result(task, template_name=tpl_name, next_template_names=task.get("next_template"), log_callback=log_callback, stop_flag=stop_flag)
             after_wait = max(0.0, float(task.get("after_wait", 0.0)))
             if after_wait > 0:
-                time.sleep(after_wait)
+                if interruptible_sleep(after_wait, stop_flag):
+                    return False
             return True
 
-        if allow_detour and task.get("detour_enabled"):
+        if allow_detour and (task.get("detour_enabled") or task.get("detour_jump_to") is not None):
             log(f"  当前任务未识别到 '{tpl_name}'，执行迂回流程。", log_callback)
             if execute_detour_task(task, stop_flag=stop_flag, log_callback=log_callback):
                 jump_target = task.get("detour_jump_to")
@@ -750,7 +828,8 @@ def execute_task(task, stop_flag=None, log_callback=None, allow_detour=True):
                 return False
             raise RuntimeError(f"必需步骤 '{tpl_name}' 未在超时时间内出现，脚本停止。")
 
-        time.sleep(poll_interval)
+        if interruptible_sleep(poll_interval, stop_flag):
+            return False
 
 
 def run_task_queue(tasks, loop=False, stop_flag=None, log_callback=None):
@@ -805,7 +884,8 @@ def run_task_queue(tasks, loop=False, stop_flag=None, log_callback=None):
                 show_complete_message()
                 return
             log("任务队列将重新开始循环...", log_callback)
-            time.sleep(1)
+            if interruptible_sleep(1, stop_flag):
+                return
 
     except KeyboardInterrupt:
         log("\n用户手动停止脚本。", log_callback)
